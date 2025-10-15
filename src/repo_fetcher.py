@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import git
 from git import Repo
 import logging
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,43 @@ class RepositoryFetcher:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.github_token = github_token
         
+    def _get_default_branch(self, owner: str, repo: str) -> str:
+        """
+        Fetch the default branch name from GitHub API.
+        
+        Args:
+            owner: Repository owner
+            repo: Repository name
+        
+        Returns:
+            Default branch name (e.g., 'main', 'master', 'live')
+        """
+        try:
+            headers = {}
+            if self.github_token:
+                headers["Authorization"] = f"token {self.github_token}"
+            
+            url = f"https://api.github.com/repos/{owner}/{repo}"
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                default_branch = data.get("default_branch", "main")
+                logger.info(f"Detected default branch for {owner}/{repo}: {default_branch}")
+                return default_branch
+            elif response.status_code == 404:
+                logger.warning(f"Repository {owner}/{repo} not found via API, falling back to 'main'")
+                return "main"
+            else:
+                logger.warning(
+                    f"GitHub API returned {response.status_code} for {owner}/{repo}, "
+                    f"falling back to 'main'"
+                )
+                return "main"
+        except Exception as e:
+            logger.warning(f"Failed to fetch default branch via GitHub API: {e}. Falling back to 'main'")
+            return "main"
+    
     def _parse_repo_url(self, repo_identifier: str) -> Dict[str, str]:
         """
         Parse repository identifier into owner and repo name.
@@ -40,7 +78,7 @@ class RepositoryFetcher:
         Returns:
             Dict with owner, repo, branch, and url
         """
-        branch = "main"  # Default branch
+        branch = None  # Will be auto-detected if not specified
         
         # Handle branch specification
         if "@" in repo_identifier:
@@ -64,6 +102,10 @@ class RepositoryFetcher:
                 )
             owner, repo = repo_identifier.split("/", 1)
             repo = repo.replace(".git", "")
+        
+        # Auto-detect default branch if not specified
+        if branch is None:
+            branch = self._get_default_branch(owner, repo)
         
         # Build authenticated URL if token is available
         if self.github_token:
