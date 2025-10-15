@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "codebase-analyser": {
+      "url": "http://localhost:8050/sse",
+      "transport": {
+        "type": "sse"
+      },
+      "description": "Intelligent codebase analysis and section recommendations"
+    }
+  }
+}
+

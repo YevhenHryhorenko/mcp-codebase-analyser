@@ -1,0 +1,33 @@
+services:
+  codebase-analyser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PORT: 8000
+    container_name: mcp-codebase-analyser
+    ports:
+      - "8050:8000"
+    env_file:
+      - .env
+    volumes:
+      # Persist repository cache
+      - ./repo_cache:/app/repo_cache
+      # Persist vector database
+      - ./chroma_db:/app/chroma_db
+      # Optional: mount logs
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - TRANSPORT=sse
+      - REPO_CACHE_DIR=/app/repo_cache
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/sse || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
