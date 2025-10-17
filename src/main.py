@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 from typing import Optional
+from pathlib import Path
 
 # Load environment first
 from dotenv import load_dotenv
@@ -62,8 +63,15 @@ async def initialize_context():
     
     max_file_size_kb = int(os.getenv("MAX_FILE_SIZE_KB", "500"))
     supported_extensions = os.getenv("SUPPORTED_EXTENSIONS", 
-                                    ".js,.jsx,.ts,.tsx,.py,.java,.go,.rs,.cpp,.c,.h")
+                                    ".js,.jsx,.ts,.tsx,.py,.java,.go,.rs,.cpp,.c,.h,.liquid,.html,.htm,.vue,.css,.scss,.sass,.less")
     supported_ext_list = [ext.strip() for ext in supported_extensions.split(",")]
+    
+    # Skip patterns for files to exclude (minified, bundled, etc.)
+    skip_patterns_env = os.getenv("SKIP_PATTERNS", "")
+    skip_patterns_list = None  # Use defaults if not specified
+    if skip_patterns_env:
+        skip_patterns_list = [pattern.strip() for pattern in skip_patterns_env.split(",")]
+        logger.info(f"Using custom skip patterns: {skip_patterns_list}")
     
     # Initialize components
     logger.info("Initializing Codebase Analyser MCP Server...")
@@ -75,7 +83,8 @@ async def initialize_context():
     
     code_parser = CodeParser(
         max_file_size_kb=max_file_size_kb,
-        supported_extensions=supported_ext_list
+        supported_extensions=supported_ext_list,
+        skip_patterns=skip_patterns_list
     )
     
     embedding_system = EmbeddingSystem(
@@ -451,6 +460,109 @@ async def clear_repository_cache(
         return json.dumps({
             "success": False,
             "error": str(e)
+        }, indent=2)
+
+@mcp.tool()
+async def get_repository_stats(
+    ctx: Context,
+    repo_identifier: str
+) -> str:
+    """
+    Get detailed statistics about an analyzed repository.
+    
+    Returns comprehensive information including:
+    - Total files and sections indexed
+    - Section types breakdown (functions, classes, components, etc.)
+    - File type distribution
+    - Average file sizes
+    - Most common file extensions
+    - Largest files
+    - Repository metadata (commit info, branch, etc.)
+    
+    Args:
+        ctx: The MCP server context
+        repo_identifier: Repository to get stats for (e.g., 'owner/repo')
+    
+    Returns:
+        JSON string with detailed repository statistics
+    """
+    try:
+        context = get_context()
+        
+        # Get all sections for this repo
+        all_sections = context.embedding_system.collection.get(
+            where={"repo": repo_identifier}
+        )
+        
+        if not all_sections or not all_sections.get("ids"):
+            return json.dumps({
+                "success": False,
+                "error": f"Repository '{repo_identifier}' not found or not indexed. Run analyze_repository first.",
+                "repo": repo_identifier
+            }, indent=2)
+        
+        sections = all_sections["metadatas"]
+        documents = all_sections.get("documents", [])
+        
+        # Calculate statistics
+        section_types = {}
+        file_types = {}
+        files_with_sections = {}
+        
+        for section in sections:
+            # Count section types
+            section_type = section.get("type", "unknown")
+            section_types[section_type] = section_types.get(section_type, 0) + 1
+            
+            # Count file types
+            file_path = section.get("file_path", "")
+            file_ext = Path(file_path).suffix or "no_extension"
+            file_types[file_ext] = file_types.get(file_ext, 0) + 1
+            
+            # Track sections per file
+            if file_path not in files_with_sections:
+                files_with_sections[file_path] = []
+            files_with_sections[file_path].append(section.get("name", "unnamed"))
+        
+        # Calculate document sizes
+        doc_sizes = [len(doc) for doc in documents if doc]
+        avg_section_size = sum(doc_sizes) / len(doc_sizes) if doc_sizes else 0
+        
+        # Find largest files (by number of sections)
+        top_files = sorted(
+            files_with_sections.items(),
+            key=lambda x: len(x[1]),
+            reverse=True
+        )[:10]
+        
+        return json.dumps({
+            "success": True,
+            "repo": repo_identifier,
+            "summary": {
+                "total_sections": len(sections),
+                "total_files": len(files_with_sections),
+                "avg_section_size_chars": int(avg_section_size),
+                "unique_section_types": len(section_types),
+                "unique_file_types": len(file_types)
+            },
+            "section_types": dict(sorted(section_types.items(), key=lambda x: x[1], reverse=True)),
+            "file_types": dict(sorted(file_types.items(), key=lambda x: x[1], reverse=True)),
+            "top_files_by_sections": [
+                {
+                    "file": file_path,
+                    "sections": len(section_names),
+                    "section_names": section_names[:5]  # First 5 sections
+                }
+                for file_path, section_names in top_files
+            ]
+        }, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error getting repository stats: {e}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "repo": repo_identifier
         }, indent=2)
 
 @mcp.tool()

@@ -72,10 +72,27 @@ class CodeParser:
         ".liquid",  # Shopify Liquid templates
         ".html", ".htm",  # HTML
         ".vue",  # Vue components
+        ".css", ".scss", ".sass", ".less",  # Stylesheets
     }
     
     # Patterns for different code structures
     PATTERNS = {
+        # CSS/SCSS Sections
+        "css_class": [
+            r"\.([a-zA-Z][\w-]*)\s*\{",  # CSS classes (.my-class {)
+        ],
+        "css_id": [
+            r"#([a-zA-Z][\w-]*)\s*\{",  # CSS IDs (#my-id {)
+        ],
+        "css_keyframes": [
+            r"@keyframes\s+([a-zA-Z][\w-]*)",  # CSS animations
+        ],
+        "scss_mixin": [
+            r"@mixin\s+([a-zA-Z][\w-]*)",  # SCSS mixins
+        ],
+        "scss_function": [
+            r"@function\s+([a-zA-Z][\w-]*)",  # SCSS functions
+        ],
         # Liquid Sections and Snippets
         "liquid_section": [
             r"{%\s*schema\s*%}",  # Liquid schema blocks (sections)
@@ -116,7 +133,8 @@ class CodeParser:
     def __init__(
         self,
         max_file_size_kb: int = 500,
-        supported_extensions: Optional[List[str]] = None
+        supported_extensions: Optional[List[str]] = None,
+        skip_patterns: Optional[List[str]] = None
     ):
         """
         Initialize the code parser.
@@ -124,9 +142,22 @@ class CodeParser:
         Args:
             max_file_size_kb: Maximum file size to parse in KB
             supported_extensions: List of file extensions to parse
+            skip_patterns: List of file name patterns to skip (e.g., ['.min.js', 'bundle-'])
         """
         self.max_file_size_kb = max_file_size_kb
         self.supported_extensions = set(supported_extensions) if supported_extensions else self.SUPPORTED_EXTENSIONS
+        
+        # Default skip patterns for minified/bundled files
+        default_skip_patterns = [
+            '.min.js', '.min.css', '.min.html',
+            '.chunk.js', '.bundle.js', 
+            '-min.js', '_min.js',
+            '.production.js', '.prod.js',
+            'bundle-main.js', 'bundle-product.js', 
+            'bundle-customer.js', 'bundle-cart.js',
+            'bundle-', 'chunk-',
+        ]
+        self.skip_patterns = skip_patterns if skip_patterns is not None else default_skip_patterns
     
     def should_parse_file(self, file_path: Path) -> bool:
         """Check if a file should be parsed."""
@@ -134,19 +165,10 @@ class CodeParser:
         if file_path.suffix not in self.supported_extensions:
             return False
         
-        # Skip minified/bundled files (low value, adds noise)
+        # Skip files matching skip patterns (minified/bundled files, etc.)
         file_name = file_path.name.lower()
-        minified_patterns = [
-            '.min.js', '.min.css', '.min.html',
-            '.chunk.js', '.bundle.js', 
-            '-min.js', '_min.js',
-            '.production.js', '.prod.js',
-            'bundle-main.js', 'bundle-product.js', 
-            'bundle-customer.js', 'bundle-cart.js',
-            'bundle-', 'chunk-',  # Catch any bundle-* or chunk-* files
-        ]
-        if any(pattern in file_name for pattern in minified_patterns):
-            logger.debug(f"Skipping {file_path}: minified/bundled file")
+        if any(pattern in file_name for pattern in self.skip_patterns):
+            logger.debug(f"Skipping {file_path}: matches skip pattern")
             return False
         
         # Check file size

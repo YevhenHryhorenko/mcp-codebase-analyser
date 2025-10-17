@@ -45,7 +45,7 @@ class RepositoryFetcher:
                 headers["Authorization"] = f"token {self.github_token}"
             
             url = f"https://api.github.com/repos/{owner}/{repo}"
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 data = response.json()
@@ -53,14 +53,52 @@ class RepositoryFetcher:
                 logger.info(f"Detected default branch for {owner}/{repo}: {default_branch}")
                 return default_branch
             elif response.status_code == 404:
-                logger.warning(f"Repository {owner}/{repo} not found via API, falling back to 'main'")
+                logger.warning(f"❌ Repository {owner}/{repo} not found. Please check the repository name.")
+                return "main"
+            elif response.status_code == 403:
+                # Rate limit or authentication issue
+                rate_limit_remaining = response.headers.get("X-RateLimit-Remaining", "unknown")
+                rate_limit_reset = response.headers.get("X-RateLimit-Reset", "unknown")
+                
+                if rate_limit_remaining == "0":
+                    logger.error(
+                        f"⏱️  GitHub API rate limit exceeded! "
+                        f"Rate limit resets at {rate_limit_reset}. "
+                        f"Consider adding a GITHUB_TOKEN to your .env file for higher limits."
+                    )
+                else:
+                    logger.error(
+                        f"🔒 GitHub API access forbidden for {owner}/{repo}. "
+                        f"This may be a private repository. Add GITHUB_TOKEN to your .env file."
+                    )
+                return "main"
+            elif response.status_code == 401:
+                logger.error(
+                    f"🔑 GitHub authentication failed. "
+                    f"Your GITHUB_TOKEN may be invalid or expired. Please check your .env file."
+                )
                 return "main"
             else:
                 logger.warning(
-                    f"GitHub API returned {response.status_code} for {owner}/{repo}, "
-                    f"falling back to 'main'"
+                    f"⚠️  GitHub API returned status {response.status_code} for {owner}/{repo}. "
+                    f"Using default branch 'main'."
                 )
                 return "main"
+        except requests.exceptions.Timeout:
+            logger.error(
+                f"⏱️  Network timeout while connecting to GitHub API for {owner}/{repo}. "
+                f"Please check your internet connection and try again."
+            )
+            return "main"
+        except requests.exceptions.ConnectionError:
+            logger.error(
+                f"🌐 Unable to connect to GitHub API. "
+                f"Please check your internet connection and try again."
+            )
+            return "main"
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Network error while fetching repository info: {str(e)}")
+            return "main"
         except Exception as e:
             logger.warning(f"Failed to fetch default branch via GitHub API: {e}. Falling back to 'main'")
             return "main"
@@ -167,36 +205,66 @@ class RepositoryFetcher:
                 return cache_path
             
             # Clone the repository
-            logger.info(f"Cloning repository from {repo_info['url']}")
+            logger.info(f"📥 Cloning repository from {repo_info['url']}")
             logger.info(f"Branch: {repo_info['branch']}")
             logger.info(f"Cache path: {cache_path}")
             
-            Repo.clone_from(
-                repo_info["url"],
-                cache_path,
-                branch=repo_info["branch"],
-                depth=1  # Shallow clone for faster download
-            )
+            try:
+                Repo.clone_from(
+                    repo_info["url"],
+                    cache_path,
+                    branch=repo_info["branch"],
+                    depth=1  # Shallow clone for faster download
+                )
+                logger.info(f"✅ Successfully cloned repository to {cache_path}")
+            except git.exc.GitCommandError as clone_error:
+                # Clean up partial clone
+                if cache_path.exists():
+                    shutil.rmtree(cache_path)
+                raise clone_error
             
-            logger.info(f"Successfully cloned repository to {cache_path}")
             return cache_path
             
         except git.exc.GitCommandError as e:
             error_msg = str(e)
             if "Authentication failed" in error_msg or "authentication" in error_msg.lower():
+                logger.error(f"🔑 GitHub authentication failed for {repo_identifier}")
                 raise Exception(
-                    f"GitHub authentication failed. The repository may be private. "
-                    f"Please provide a valid GITHUB_TOKEN in your .env file."
+                    f"🔑 Authentication failed. The repository '{repo_identifier}' may be private. "
+                    f"Please add a valid GITHUB_TOKEN to your .env file with access to this repository."
                 ) from e
             elif "Repository not found" in error_msg or "not found" in error_msg.lower():
+                logger.error(f"❌ Repository not found: {repo_identifier}")
                 raise Exception(
-                    f"Repository not found: {repo_identifier}. "
-                    f"Please check the repository name and ensure it exists."
+                    f"❌ Repository '{repo_identifier}' not found. "
+                    f"Please check the repository name, owner, and ensure it exists on GitHub."
+                ) from e
+            elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                logger.error(f"⏱️  Timeout while cloning {repo_identifier}")
+                raise Exception(
+                    f"⏱️  Network timeout while cloning '{repo_identifier}'. "
+                    f"The repository may be too large or your connection is slow. Try again later."
+                ) from e
+            elif "Connection refused" in error_msg or "Failed to connect" in error_msg:
+                logger.error(f"🌐 Connection failed for {repo_identifier}")
+                raise Exception(
+                    f"🌐 Unable to connect to GitHub. Please check your internet connection and try again."
                 ) from e
             else:
-                raise Exception(f"Git error while fetching repository: {error_msg}") from e
+                logger.error(f"Git error: {error_msg}")
+                raise Exception(f"❌ Git error while fetching repository: {error_msg}") from e
+        except OSError as e:
+            if "No space left" in str(e):
+                logger.error(f"💾 Disk space error while cloning {repo_identifier}")
+                raise Exception(
+                    f"💾 Insufficient disk space to clone repository. Please free up space and try again."
+                ) from e
+            else:
+                logger.error(f"File system error: {str(e)}")
+                raise Exception(f"❌ File system error: {str(e)}") from e
         except Exception as e:
-            raise Exception(f"Failed to fetch repository {repo_identifier}: {str(e)}") from e
+            logger.error(f"Unexpected error fetching {repo_identifier}: {str(e)}")
+            raise Exception(f"❌ Failed to fetch repository '{repo_identifier}': {str(e)}") from e
     
     def get_repository_info(self, repo_path: Path) -> Dict[str, Any]:
         """

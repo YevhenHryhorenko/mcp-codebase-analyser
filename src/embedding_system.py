@@ -12,6 +12,7 @@ from openai import OpenAI
 import hashlib
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,72 @@ class EmbeddingSystem:
         """Generate unique ID for a code section including code hash for absolute uniqueness."""
         unique_string = f"{repo_identifier}::{file_path}::{section_name}::{start_line}::{end_line}::{code_hash}"
         return hashlib.md5(unique_string.encode()).hexdigest()
+    
+    def _preprocess_query(self, query: str) -> str:
+        """
+        Preprocess search query to improve results.
+        
+        - Removes common stop words
+        - Expands common abbreviations
+        - Cleans up formatting
+        
+        Args:
+            query: Raw search query
+        
+        Returns:
+            Preprocessed query
+        """
+        # Common stop words to remove (keep technical ones like "async", "static")
+        stop_words = {
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 
+            'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 
+            'that', 'the', 'to', 'was', 'will', 'with'
+        }
+        
+        # Common programming abbreviations to expand
+        abbreviations = {
+            'auth': 'authentication',
+            'config': 'configuration',
+            'ctx': 'context',
+            'db': 'database',
+            'func': 'function',
+            'impl': 'implementation',
+            'params': 'parameters',
+            'props': 'properties',
+            'repo': 'repository',
+            'res': 'response',
+            'req': 'request',
+            'util': 'utility',
+            'btn': 'button',
+            'msg': 'message',
+            'init': 'initialize',
+            'async': 'asynchronous',
+        }
+        
+        # Clean up query
+        query = query.lower().strip()
+        
+        # Expand abbreviations
+        words = query.split()
+        expanded_words = []
+        for word in words:
+            # Remove punctuation
+            clean_word = re.sub(r'[^\w\s-]', '', word)
+            if clean_word in abbreviations:
+                # Keep both the abbreviation and expansion for better matching
+                expanded_words.append(clean_word)
+                expanded_words.append(abbreviations[clean_word])
+            elif clean_word not in stop_words or len(clean_word) > 3:
+                # Keep word if it's not a stop word, or if it's a longer stop word
+                expanded_words.append(clean_word)
+        
+        processed_query = ' '.join(expanded_words)
+        
+        # Log if query was significantly changed
+        if processed_query != query:
+            logger.debug(f"Query preprocessing: '{query}' -> '{processed_query}'")
+        
+        return processed_query if processed_query else query  # Fallback to original if empty
     
     def index_code_sections(
         self,
@@ -295,7 +362,7 @@ class EmbeddingSystem:
         self,
         query: str,
         repo_filter: Optional[str] = None,
-        limit: int = 5,
+        limit: int = 20,
         min_score: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
@@ -311,8 +378,11 @@ class EmbeddingSystem:
             List of matching code sections with scores
         """
         try:
+            # Preprocess query for better search results
+            processed_query = self._preprocess_query(query)
+            
             # Generate query embedding
-            query_embedding = self._generate_embedding(query)
+            query_embedding = self._generate_embedding(processed_query)
             
             # Build where filter
             where_filter = None
